@@ -1,0 +1,513 @@
+---
+title: "Billboard Hot 100"
+author: "Dustin Tharp"
+execute:
+  echo: false
+---
+
+```{r}
+#| message: false
+library(tidyverse)
+```
+
+```{r}
+#| cache: true
+billboard <- read_csv("data/billboard.csv", show_col_types = FALSE)
+```
+
+```{r}
+n_observations <- sum(!is.na(billboard$wk1))
+selected_weeks <- paste0("wk", c(1, 4, 10, 20, 40, 76))
+ranking_completeness <- billboard |>
+  summarise(across(
+    all_of(selected_weeks),
+    list(
+      Present = \(x) sum(!is.na(x)),
+      Missing = \(x) sum(is.na(x))
+    ),
+    .names = "{.col}_{.fn}"
+  )) |>
+  pivot_longer(
+    everything(),
+    names_to = c("Week", "Status"),
+    names_pattern = "(wk\\d+)_(Present|Missing)",
+    values_to = "Count"
+  ) |>
+  pivot_wider(names_from = Status, values_from = Count) |>
+  mutate(Week = factor(Week, levels = selected_weeks)) |>
+  arrange(Week)
+ranking_table_rows <- lapply(seq_len(nrow(ranking_completeness)), \(i) {
+  htmltools::tags$tr(
+    htmltools::tags$th(as.character(ranking_completeness$Week[i]), scope = "row"),
+    htmltools::tags$td(format(ranking_completeness$Present[i], big.mark = ",")),
+    htmltools::tags$td(format(ranking_completeness$Missing[i], big.mark = ","))
+  )
+})
+
+billboard_long <- billboard |>
+  mutate(song = row_number()) |>
+  pivot_longer(
+    cols = starts_with("wk"),
+    names_to = "week",
+    names_prefix = "wk",
+    names_transform = list(week = as.integer),
+    values_to = "rank"
+  )
+
+song_summary <- billboard_long |>
+  filter(!is.na(rank)) |>
+  summarise(
+    artist = first(artist),
+    track = first(track),
+    first_rank = rank[which.min(week)],
+    best_rank = min(rank),
+    first_week_at_best = min(week[rank == min(rank)]),
+    weeks_on_chart = n(),
+    .by = song
+  )
+top_10_songs <- song_summary |> filter(best_rank <= 10)
+fastest_to_number_one <- top_10_songs |>
+  filter(best_rank == 1) |>
+  arrange(first_week_at_best, song) |>
+  slice_head(n = 1) |>
+  mutate(notable = "Fastest to #1")
+slowest_to_number_one <- top_10_songs |>
+  filter(best_rank == 1) |>
+  arrange(desc(first_week_at_best), song) |>
+  slice_head(n = 1) |>
+  mutate(notable = "Slowest to #1")
+longest_top_10_run <- top_10_songs |>
+  arrange(desc(weeks_on_chart), song) |>
+  slice_head(n = 1) |>
+  mutate(notable = "Longest top-10 chart run")
+notable_songs <- bind_rows(
+  fastest_to_number_one,
+  slowest_to_number_one,
+  longest_top_10_run
+)
+notable_song_rows <- lapply(seq_len(nrow(notable_songs)), \(i) {
+  htmltools::tags$tr(
+    htmltools::tags$th(notable_songs$notable[i], scope = "row"),
+    htmltools::tags$td(notable_songs$artist[i]),
+    htmltools::tags$td(notable_songs$track[i]),
+    htmltools::tags$td(notable_songs$first_rank[i]),
+    htmltools::tags$td(notable_songs$best_rank[i]),
+    htmltools::tags$td(notable_songs$first_week_at_best[i]),
+    htmltools::tags$td(notable_songs$weeks_on_chart[i])
+  )
+})
+
+song_last_weeks <- billboard_long |>
+  filter(!is.na(rank)) |>
+  summarise(last_week = max(week), .by = song)
+week20_exits <- billboard_long |>
+  filter(week == 20, !is.na(rank)) |>
+  inner_join(
+    song_last_weeks |> filter(last_week == 20),
+    by = "song"
+  )
+n_week20_exits <- nrow(week20_exits)
+n_week20_below_50 <- sum(week20_exits$rank > 50)
+
+top_10_long <- billboard_long |>
+  semi_join(top_10_songs, by = "song")
+highlighted_songs <- notable_songs |>
+  mutate(legend_name = paste(artist, "—", track))
+highlighted_long <- top_10_long |>
+  inner_join(
+    highlighted_songs |> select(song, legend_name),
+    by = "song"
+  )
+highlight_colors <- setNames(
+  c("#35d6e8", "#a77bff", "#ff6cab"),
+  highlighted_songs$legend_name
+)
+
+ranking_chart <- ggplot(
+  top_10_long,
+  aes(x = week, y = rank, group = song)
+) +
+  geom_line(
+    color = "#778096",
+    alpha = 0.34,
+    linewidth = 0.6,
+    na.rm = TRUE
+  ) +
+  geom_line(
+    data = highlighted_long,
+    aes(color = legend_name),
+    linewidth = 1.15,
+    na.rm = TRUE
+  ) +
+  scale_color_manual(
+    name = NULL,
+    values = highlight_colors
+  ) +
+  scale_x_continuous(
+    breaks = seq(10, 70, by = 10),
+    expand = expansion(mult = c(0.01, 0.03))
+  ) +
+  scale_y_reverse(
+    limits = c(100, 1),
+    breaks = seq(10, 100, by = 10),
+    expand = c(0, 0)
+  ) +
+  labs(
+    x = "Week on the Billboard Hot 100",
+    y = "Billboard Hot 100 Rank"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.background = element_rect(fill = "transparent", color = NA),
+    panel.background = element_rect(fill = "transparent", color = NA),
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_line(color = "#292d47", linewidth = 0.45),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(color = "#aeb8d0"),
+    axis.title = element_text(color = "#d6d9e8"),
+    axis.title.x = element_text(margin = margin(t = 16)),
+    axis.title.y = element_text(margin = margin(r = 12)),
+    legend.position = "bottom",
+    legend.text = element_text(color = "#d6d9e8"),
+    legend.background = element_rect(fill = "transparent", color = NA)
+  )
+
+htmltools::tagList(
+  htmltools::tags$style(htmltools::HTML("
+    :root {
+      color-scheme: dark;
+      --page: #080b14;
+      --surface: #111625;
+      --surface-raised: #151b2b;
+      --line: rgba(163, 176, 216, 0.14);
+      --text: #f5f7ff;
+      --muted: #9ca8c2;
+      --purple: #a77bff;
+      --cyan: #35d6e8;
+    }
+    html { background: var(--page); }
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse at 12% 0%, rgba(104, 67, 210, 0.16), transparent 36rem),
+        radial-gradient(ellipse at 95% 28%, rgba(28, 165, 196, 0.09), transparent 30rem),
+        var(--page) !important;
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    #title-block-header { display: none; }
+    #quarto-content, main.content {
+      width: 100%;
+      max-width: none !important;
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+    .music-dashboard {
+      box-sizing: border-box;
+      width: min(100% - 48px, 1220px);
+      margin: 0 auto;
+      padding: clamp(32px, 6vw, 72px) 0 80px;
+    }
+    .dashboard-hero {
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 30px;
+      padding: clamp(28px, 5vw, 52px);
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      background:
+        linear-gradient(110deg, rgba(112, 71, 210, 0.22), transparent 57%),
+        linear-gradient(145deg, rgba(21, 27, 43, 0.98), rgba(12, 17, 30, 0.94));
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.24), inset 0 1px rgba(255, 255, 255, 0.045);
+    }
+    .dashboard-hero::after {
+      position: absolute;
+      top: -90px;
+      right: -75px;
+      width: 270px;
+      height: 270px;
+      border: 1px solid rgba(53, 214, 232, 0.18);
+      border-radius: 50%;
+      box-shadow: 0 0 0 26px rgba(53, 214, 232, 0.025), 0 0 70px rgba(53, 214, 232, 0.1);
+      content: '';
+      pointer-events: none;
+    }
+    .dashboard-eyebrow {
+      margin: 0 0 14px;
+      color: var(--cyan);
+      font-size: 0.76rem;
+      font-weight: 750;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+    .dashboard-title {
+      max-width: 850px;
+      margin: 0;
+      color: var(--text);
+      font-size: clamp(2.5rem, 6.5vw, 5rem);
+      font-weight: 800;
+      letter-spacing: -0.055em;
+      line-height: 1.05;
+    }
+    .dashboard-subtitle {
+      max-width: 680px;
+      margin: 18px 0 0;
+      color: #b2bdd3;
+      font-size: clamp(1rem, 2vw, 1.16rem);
+      line-height: 1.7;
+    }
+    .dashboard-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin: 0 0 26px;
+    }
+    .dashboard-stat {
+      display: flex;
+      min-height: 136px;
+      flex-direction: column;
+      justify-content: center;
+      gap: 9px;
+      box-sizing: border-box;
+      padding: 22px 24px;
+      border: 1px solid var(--line);
+      border-radius: 19px;
+      background:
+        linear-gradient(140deg, rgba(143, 100, 255, 0.1), transparent 70%),
+        var(--surface);
+      box-shadow: 0 12px 34px rgba(0, 0, 0, 0.16), inset 0 1px rgba(255, 255, 255, 0.035);
+    }
+    .dashboard-stat:nth-child(2) {
+      background: linear-gradient(140deg, rgba(53, 214, 232, 0.1), transparent 70%), var(--surface);
+    }
+    .dashboard-stat:nth-child(3) {
+      background: linear-gradient(140deg, rgba(255, 108, 171, 0.1), transparent 70%), var(--surface);
+    }
+    .dashboard-stat-value {
+      color: var(--text);
+      font-size: clamp(2rem, 3vw, 2.6rem);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1;
+    }
+    .dashboard-stat-label {
+      color: var(--muted);
+      font-size: 0.88rem;
+      font-weight: 550;
+      line-height: 1.45;
+    }
+    .dashboard-chart {
+      min-width: 0;
+      margin-top: 20px;
+      padding: clamp(20px, 3.8vw, 38px);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: linear-gradient(150deg, rgba(20, 26, 42, 0.98), rgba(13, 18, 30, 0.98));
+      box-shadow: 0 22px 64px rgba(0, 0, 0, 0.22), 0 0 46px rgba(111, 64, 232, 0.055);
+    }
+    .chart-heading { margin: 0 0 16px; }
+    .chart-heading h2 {
+      margin: 0;
+      color: var(--text);
+      font-size: clamp(1.15rem, 2vw, 1.4rem);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+    }
+    .chart-heading p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.5;
+    }
+    .table-scroll {
+      max-width: 100%;
+      margin-top: 18px;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      scrollbar-color: #576080 #111625;
+    }
+    .ranking-completeness {
+      width: 100%;
+      min-width: 380px;
+      margin: 0;
+      border-collapse: collapse;
+      color: #dce3f3;
+    }
+    .ranking-completeness th, .ranking-completeness td,
+    .notable-songs th, .notable-songs td {
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(151, 162, 204, 0.11);
+      text-align: right;
+      white-space: nowrap;
+    }
+    .ranking-completeness thead th, .notable-songs thead th {
+      background: rgba(132, 105, 220, 0.08);
+      color: #bba4ff;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+    .ranking-completeness th:first-child, .ranking-completeness td:first-child {
+      text-align: left;
+    }
+    .ranking-completeness tbody tr:nth-child(even),
+    .notable-songs tbody tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.025);
+    }
+    .notable-songs {
+      width: 100%;
+      min-width: 760px;
+      margin: 0;
+      border-collapse: collapse;
+      color: #dce3f3;
+      font-size: 0.9rem;
+    }
+    .dashboard-chart .plotly, .dashboard-chart .plot-container {
+      width: 100% !important;
+    }
+    @media (max-width: 760px) {
+      .music-dashboard { width: min(100% - 32px, 1220px); }
+      .dashboard-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .dashboard-stat:last-child { grid-column: 1 / -1; }
+      .dashboard-chart { padding: 22px 18px; }
+      .ranking-completeness th, .ranking-completeness td,
+      .notable-songs th, .notable-songs td { padding: 12px; }
+    }
+    @media (max-width: 520px) {
+      .music-dashboard { width: min(100% - 24px, 1220px); padding-top: 20px; }
+      .dashboard-hero { padding: 28px 22px; border-radius: 20px; }
+      .dashboard-hero::after { right: -180px; opacity: 0.6; }
+      .dashboard-stats { grid-template-columns: 1fr; gap: 10px; }
+      .dashboard-stat, .dashboard-stat:last-child { min-height: 0; grid-column: auto; padding: 18px 20px; }
+      .dashboard-chart { padding: 20px 14px; border-radius: 18px; }
+    }
+  ")),
+  htmltools::tags$main(
+    class = "music-dashboard",
+    htmltools::tags$header(
+      class = "dashboard-hero",
+      htmltools::tags$p(class = "dashboard-eyebrow", "Billboard chart intelligence"),
+      htmltools::tags$h1(class = "dashboard-title", "How Hits Climb the Charts"),
+      htmltools::tags$p(
+        class = "dashboard-subtitle",
+        "A week-by-week look at every track that broke into the Billboard Hot 100 top 10."
+      )
+    ),
+    htmltools::tags$section(
+      class = "dashboard-stats",
+      htmltools::tags$article(
+        class = "dashboard-stat",
+        htmltools::tags$span(class = "dashboard-stat-value", format(n_observations, big.mark = ",")),
+        htmltools::tags$span(class = "dashboard-stat-label", "songs with a Week 1 ranking")
+      ),
+      htmltools::tags$article(
+        class = "dashboard-stat",
+        htmltools::tags$span(class = "dashboard-stat-value", format(n_week20_exits, big.mark = ",")),
+        htmltools::tags$span(class = "dashboard-stat-label", "songs whose final chart week was week 20")
+      ),
+      htmltools::tags$article(
+        class = "dashboard-stat",
+        htmltools::tags$span(class = "dashboard-stat-value", format(n_week20_below_50, big.mark = ",")),
+        htmltools::tags$span(class = "dashboard-stat-label", "of those exited below #50 (ranks 51–100)")
+      )
+    ),
+    htmltools::tags$section(
+      class = "dashboard-chart",
+      htmltools::tags$div(
+        class = "chart-heading",
+        htmltools::tags$h2("Song rankings over time"),
+          htmltools::tags$p(
+            "Songs that reached the top 10 are shown in gray; the three featured tracks are highlighted."
+          )
+        ),
+        plotly::ggplotly(
+          ranking_chart,
+        tooltip = c("x", "y", "colour"),
+        height = 450
+      ) |>
+        plotly::config(displayModeBar = FALSE, responsive = TRUE) |>
+        plotly::layout(
+          paper_bgcolor = "rgba(0,0,0,0)",
+          plot_bgcolor = "rgba(0,0,0,0)",
+          font = list(color = "#c5cbe0"),
+          margin = list(l = 64, r = 22, b = 92, t = 24),
+          legend = list(
+            orientation = "h",
+            x = 0.5,
+            xanchor = "center",
+            y = -0.22,
+            yanchor = "top",
+            bgcolor = "rgba(0,0,0,0)"
+          ),
+          xaxis = list(
+            title = list(standoff = 18),
+            tickfont = list(color = "#aeb8d0"),
+            gridcolor = "rgba(151,162,204,0.08)"
+          ),
+          yaxis = list(
+            title = list(standoff = 18),
+            tickfont = list(color = "#aeb8d0"),
+            gridcolor = "rgba(151,162,204,0.12)"
+          ),
+          hoverlabel = list(
+            bgcolor = "#191b2d",
+            bordercolor = "#a77bff",
+            font = list(color = "#ffffff")
+          )
+        )
+    ),
+    htmltools::tags$section(
+      class = "dashboard-chart",
+        htmltools::tags$div(
+          class = "chart-heading",
+          htmltools::tags$h2("Notable top-10 songs"),
+          htmltools::tags$p(
+            "Song summaries are calculated from each track's non-missing weekly ranks."
+          )
+        ),
+        htmltools::tags$div(
+          class = "table-scroll",
+          htmltools::tags$table(
+            class = "notable-songs",
+            htmltools::tags$thead(
+              htmltools::tags$tr(
+                htmltools::tags$th("Milestone", scope = "col"),
+                htmltools::tags$th("Artist", scope = "col"),
+                htmltools::tags$th("Track", scope = "col"),
+                htmltools::tags$th("First rank", scope = "col"),
+                htmltools::tags$th("Best rank", scope = "col"),
+                htmltools::tags$th("Week at best", scope = "col"),
+                htmltools::tags$th("Weeks on chart", scope = "col")
+              )
+            ),
+            htmltools::tags$tbody(notable_song_rows)
+          )
+        )
+    ),
+    htmltools::tags$section(
+        class = "dashboard-chart",
+      htmltools::tags$div(
+        class = "chart-heading",
+        htmltools::tags$h2("Ranking data completeness"),
+        htmltools::tags$p("Present and missing Week 1, 4, 10, 20, 40, and 76 rankings.")
+      ),
+      htmltools::tags$div(
+        class = "table-scroll",
+        htmltools::tags$table(
+          class = "ranking-completeness",
+          htmltools::tags$thead(
+            htmltools::tags$tr(
+              htmltools::tags$th("Week", scope = "col"),
+              htmltools::tags$th("Present", scope = "col"),
+              htmltools::tags$th("Missing", scope = "col")
+            )
+          ),
+          htmltools::tags$tbody(ranking_table_rows)
+        )
+      )
+    )
+  )
+)
+```
